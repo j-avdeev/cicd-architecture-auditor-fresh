@@ -111,10 +111,3 @@ That checks:
 - remediation review rendering
 - prompt preview and repo path propagation
 
-## Suggested next step
-
-If you want, the next iteration should be either:
-
-1. add a small web server and upload UI
-2. add live provider adapters for recent runs
-3. expand the ruleset and evidence normalization
