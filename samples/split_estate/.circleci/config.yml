@@ -1,0 +1,15 @@
+version: 2.1
+jobs:
+  mobile_release:
+    docker:
+      - image: cimg/node:current
+    steps:
+      - checkout
+      - run: yarn install
+      - run: yarn test
+      - run: ./release-mobile.sh
+workflows:
+  release:
+    jobs:
+      - mobile_release:
+          context: org-global-prod

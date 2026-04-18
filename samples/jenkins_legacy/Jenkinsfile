@@ -1,0 +1,18 @@
+pipeline {
+  agent any
+  stages {
+    stage('Build') {
+      steps {
+        sh 'mvn -q clean package'
+      }
+    }
+    stage('Deploy') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'prod-creds',
+          usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+          sh './deploy-prod.sh'
+        }
+      }
+    }
+  }
+}

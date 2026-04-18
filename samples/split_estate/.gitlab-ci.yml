@@ -1,0 +1,19 @@
+stages: [build, test, package, deploy]
+
+build:
+  stage: build
+  script: ./gradlew build
+
+test:
+  stage: test
+  script: ./gradlew test
+
+package:
+  stage: package
+  script: docker build -t registry/app:$CI_COMMIT_SHA .
+
+deploy_prod:
+  stage: deploy
+  script: ./deploy.sh
+  only:
+    - main
