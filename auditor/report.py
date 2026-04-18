@@ -106,6 +106,11 @@ def report_fragment(
     display_target: str | None = None,
     remediation_target: str = "",
     remediation_result: RemediationResult | None = None,
+    inline_job_key: str = "",
+    inline_job_html: str = "",
+    active_job_id: str = "",
+    active_job_key: str = "",
+    active_job_status: str = "",
 ) -> str:
     cards = "".join(
         f"<div class='card'><h3>{html.escape(dimension.title())}</h3><p>{score}/100</p></div>"
@@ -116,10 +121,15 @@ def report_fragment(
             finding,
             remediation_target=remediation_target,
             context=context,
+            inline_job_key=inline_job_key,
+            inline_job_html=inline_job_html,
+            active_job_id=active_job_id,
+            active_job_key=active_job_key,
+            active_job_status=active_job_status,
         )
         for finding in result.findings
     ) or "<p>No findings.</p>"
-    findings = render_findings_panel(findings_body, result.findings, remediation_target, context)
+    findings = render_findings_panel(findings_body)
     phases = []
     for phase, items in group_by_phase(result.findings).items():
         phase_items = "".join(render_migration_item(phase, item.recommendation) for item in items) or "<li>No actions scheduled.</li>"
@@ -264,27 +274,29 @@ def base_styles() -> str:
     .action-form {
       margin: 0;
     }
-    .bulk-actions {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 16px;
+    .async-pending {
+      opacity: .65;
+      pointer-events: none;
     }
-    .bulk-left {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .bulk-note {
+    .inline-status {
       color: var(--muted);
       font-size: .95rem;
+      margin-bottom: 12px;
+    }
+    .debug-panel {
+      margin-top: 12px;
+      background: #f8fbff;
+      border-color: #93c5fd;
+    }
+    .debug-log {
+      min-height: 120px;
+      max-height: 260px;
+      overflow: auto;
+      font-size: .88rem;
     }
     .action-button {
       border: 1px solid var(--border);
-      background: #f3fbf9;
+      background: #fff;
       color: var(--ink);
       border-radius: 999px;
       padding: 8px 12px;
@@ -292,24 +304,24 @@ def base_styles() -> str:
       cursor: pointer;
       white-space: nowrap;
     }
-    .action-button.apply {
-      background: #0f766e;
-      color: #fff;
-      border-color: #0f766e;
-    }
     .finding-note {
       margin-top: 10px;
       color: var(--muted);
       font-size: .92rem;
     }
-    .finding-check {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-right: auto;
+    .remediation-fix-button.is-running {
+      background: #ece6da;
       color: var(--muted);
-      font-size: .95rem;
-      white-space: nowrap;
+      border-color: var(--border);
+      cursor: default;
+    }
+    .remediation-fix-button.is-running:not(:disabled) {
+      cursor: pointer;
+    }
+    .remediation-fix-button.is-finished {
+      background: #dcfce7;
+      color: #166534;
+      border-color: #86efac;
     }
     .migration-item {
       display: flex;
@@ -331,6 +343,56 @@ def base_styles() -> str:
       gap: 10px;
       flex-wrap: wrap;
       align-items: center;
+      margin-bottom: 12px;
+    }
+    .review-card {
+      background: #fffcf6;
+    }
+    .severity-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: .82rem;
+      border: 1px solid var(--border);
+      background: #ece6da;
+    }
+    .severity-critical, .severity-high {
+      background: #fee2e2;
+      color: #991b1b;
+      border-color: #fca5a5;
+    }
+    .severity-medium {
+      background: #fef3c7;
+      color: #92400e;
+      border-color: #fcd34d;
+    }
+    .severity-low {
+      background: #dcfce7;
+      color: #166534;
+      border-color: #86efac;
+    }
+    .severity-info, .severity-running, .severity-completed, .severity-accepted, .severity-reverted {
+      background: #dbeafe;
+      color: #1d4ed8;
+      border-color: #93c5fd;
+    }
+    .severity-failed {
+      background: #fee2e2;
+      color: #991b1b;
+      border-color: #fca5a5;
+    }
+    .diff-card summary {
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .history-card {
+      border-style: dashed;
+    }
+    .finalize-note {
+      color: var(--muted);
+      font-size: .95rem;
+      margin-top: -4px;
       margin-bottom: 12px;
     }
     .status-pill {
@@ -361,6 +423,10 @@ def base_styles() -> str:
       padding: 14px;
       overflow-x: auto;
     }
+    .console-log {
+      max-height: 320px;
+      overflow-y: auto;
+    }
     code {
       background: #f1ede5;
       padding: 2px 5px;
@@ -371,6 +437,33 @@ def base_styles() -> str:
 
 def base_script() -> str:
     return """<script>
+const remediationDebugBuffer = [];
+
+function remediationDebug(message) {
+  const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+  remediationDebugBuffer.push(line);
+  const trimmed = remediationDebugBuffer.slice(-120);
+  remediationDebugBuffer.length = 0;
+  remediationDebugBuffer.push(...trimmed);
+  const logNode = document.getElementById('remediation-debug-log');
+  if (logNode) {
+    logNode.textContent = remediationDebugBuffer.join('\\n');
+    logNode.scrollTop = logNode.scrollHeight;
+  }
+  try {
+    console.debug('[remediation]', message);
+  } catch (error) {
+  }
+}
+
+window.addEventListener('error', (event) => {
+  remediationDebug(`window error: ${event.message}`);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  remediationDebug(`promise rejection: ${event.reason}`);
+});
+
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-copy-text]');
   if (button) {
@@ -391,71 +484,312 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  const selectionButton = event.target.closest('[data-select-findings]');
-  if (selectionButton) {
-    const mode = selectionButton.getAttribute('data-select-findings');
-    document.querySelectorAll('.batch-finding-select').forEach((checkbox) => {
-      checkbox.checked = mode === 'all';
+  const toggleButton = event.target.closest('[data-toggle-diffs]');
+  if (toggleButton) {
+    const shouldOpen = toggleButton.getAttribute('data-toggle-diffs') === 'open';
+    const panel = toggleButton.closest('[data-remediation-job]');
+    if (!panel) return;
+    panel.querySelectorAll('details.diff-card').forEach((node) => {
+      node.open = shouldOpen;
     });
   }
 });
 
-document.addEventListener('submit', (event) => {
-  const form = event.target.closest('form[data-batch-remediation]');
-  if (!form) return;
+const remediationQueue = [];
+const remediationWaiters = new Map();
+let remediationQueueRunning = false;
 
-  form.querySelectorAll('input[name="selected_finding"]').forEach((node) => node.remove());
-  const checked = Array.from(document.querySelectorAll('.batch-finding-select:checked'));
-  checked.forEach((checkbox) => {
-    const hidden = document.createElement('input');
-    hidden.type = 'hidden';
-    hidden.name = 'selected_finding';
-    hidden.value = checkbox.value;
-    form.appendChild(hidden);
+function isTerminalStatus(status) {
+  return ['completed', 'failed', 'stopped'].includes(status);
+}
+
+function updateQueuedButtons() {
+  const queuedKeys = new Set(remediationQueue.map((item) => item.findingKey).filter(Boolean));
+  document.querySelectorAll('[data-finding-key]').forEach((button) => {
+    if (button.classList.contains('is-running') || button.classList.contains('is-finished')) {
+      return;
+    }
+    const key = button.getAttribute('data-finding-key');
+    if (queuedKeys.has(key)) {
+      button.disabled = true;
+      button.textContent = 'Queued...';
+      button.classList.add('is-running');
+    } else {
+      button.disabled = false;
+      button.textContent = 'Fix with Codex';
+      button.classList.remove('is-running');
+      button.dataset.jobId = '';
+    }
   });
+}
+
+function registerJobWaiter(jobId) {
+  if (!jobId) return Promise.resolve();
+  return new Promise((resolve) => {
+    remediationWaiters.set(jobId, resolve);
+  });
+}
+
+function resolveJobWaiter(jobId) {
+  const resolver = remediationWaiters.get(jobId);
+  if (!resolver) return;
+  remediationWaiters.delete(jobId);
+  resolver();
+}
+
+async function stopRemediationJob(jobId, findingKey = '', button = null) {
+  if (!jobId) return;
+  remediationDebug(`Requesting stop for remediation job ${jobId}.`);
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Stopping...';
+    button.classList.add('is-running');
+  }
+  try {
+    const response = await fetch('/job-stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'X-Requested-With': 'remediation-async',
+      },
+      body: new URLSearchParams({ job_id: jobId }),
+    });
+    const payload = await response.json();
+    remediationDebug(`Stop response for ${jobId}: ${response.status} ${response.statusText}.`);
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `Stop request failed for job ${jobId}.`);
+    }
+  } catch (error) {
+    remediationDebug(`Stop request failed for ${jobId}: ${error}`);
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Running... Stop?';
+    }
+  }
+}
+
+async function runRemediationForm(form, findingKey = '') {
+  if (form.dataset.asyncRunning === 'true') {
+    remediationDebug('Ignoring duplicate remediation submit while request is still running.');
+    return '';
+  }
+  const reportRoot = document.getElementById('dynamic-report-root');
+  if (!reportRoot) {
+    remediationDebug('dynamic-report-root missing, falling back to full form submit.');
+    form.requestSubmit ? form.requestSubmit() : form.submit();
+    return '';
+  }
+
+  const status = document.getElementById('remediation-inline-status');
+  const action = form.getAttribute('action') || '(unknown action)';
+  remediationDebug(`Starting async remediation request to ${action}.`);
+  form.dataset.asyncRunning = 'true';
+  reportRoot.classList.add('async-pending');
+  if (status) {
+    status.textContent = 'Working...';
+  }
+
+  try {
+    const payload = new URLSearchParams(new FormData(form));
+    remediationDebug(`Payload keys: ${Array.from(payload.keys()).join(', ') || '(none)'}`);
+    const response = await fetch(form.action, {
+      method: form.method || 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'X-Requested-With': 'remediation-async',
+      },
+      body: payload,
+    });
+    remediationDebug(`Received response ${response.status} ${response.statusText} from ${action}.`);
+    const html = await response.text();
+    remediationDebug(`Response HTML length: ${html.length}`);
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const nextRoot = doc.getElementById('dynamic-report-root');
+    if (!nextRoot) {
+      remediationDebug('dynamic-report-root not found in response, forcing full reload.');
+      window.location.reload();
+      return;
+    }
+    remediationDebug('Swapping dynamic-report-root content in place.');
+    reportRoot.innerHTML = nextRoot.innerHTML;
+    if (status) {
+      status.textContent = '';
+    }
+    const consolePanel = document.querySelector('[data-remediation-job]');
+    if (consolePanel) {
+      remediationDebug(`Found remediation job panel ${consolePanel.getAttribute('data-remediation-job') || ''}. Starting polling.`);
+      if (status) {
+      status.textContent = 'Codex job started below.';
+      }
+      consolePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      pollRemediationJob(consolePanel);
+      return consolePanel.getAttribute('data-remediation-job') || '';
+    } else {
+      const reviewPanel = document.querySelector('[data-remediation-review]');
+      if (reviewPanel) {
+        remediationDebug('Review panel loaded. Scroll target found. Next step is to click the approve/start button inside Remediation Review.');
+        if (status) {
+          status.textContent = 'Remediation review loaded below. Click the approve/start button to launch Codex.';
+        }
+        reviewPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        remediationDebug('No remediation job panel or review panel present after swap.');
+      }
+    }
+  } catch (error) {
+    remediationDebug(`Async remediation failed: ${error}`);
+    if (status) {
+      status.textContent = 'Remediation update failed. Please retry.';
+    }
+  } finally {
+    reportRoot.classList.remove('async-pending');
+    delete form.dataset.asyncRunning;
+    if (findingKey) {
+      const button = document.querySelector(`[data-finding-key="${CSS.escape(findingKey)}"]`);
+      if (button && !button.classList.contains('is-finished')) {
+        button.classList.remove('is-running');
+      }
+    }
+    remediationDebug(`Async remediation request finished for ${action}.`);
+  }
+  return '';
+}
+
+async function runQueuedRemediations() {
+  if (remediationQueueRunning) return;
+  remediationQueueRunning = true;
+  try {
+    while (remediationQueue.length > 0) {
+      const next = remediationQueue.shift();
+      updateQueuedButtons();
+      remediationDebug(`Starting queued remediation for ${next.findingKey || '(unknown finding)'}.`);
+      const jobId = await runRemediationForm(next.form, next.findingKey);
+      if (jobId) {
+        remediationDebug(`Waiting for remediation job ${jobId} to finish before starting the next queued item.`);
+        await registerJobWaiter(jobId);
+      }
+    }
+  } finally {
+    remediationQueueRunning = false;
+    updateQueuedButtons();
+  }
+}
+
+document.addEventListener('click', async (event) => {
+  const submitButton = event.target.closest('button[type="submit"][data-remediation-button]');
+  if (!submitButton) return;
+  const form = submitButton.form;
+  if (!form) return;
+  event.preventDefault();
+  remediationDebug(`Submit button clicked for ${form.getAttribute('action') || '(unknown action)'}.`);
+  const findingKey = submitButton.getAttribute('data-finding-key') || '';
+  const activeJobId = submitButton.getAttribute('data-job-id') || '';
+  if (submitButton.classList.contains('is-running') && activeJobId && submitButton.textContent.includes('Stop')) {
+    await stopRemediationJob(activeJobId, findingKey, submitButton);
+    return;
+  }
+  if (findingKey) {
+    if (!remediationQueue.some((item) => item.findingKey === findingKey)) {
+      remediationQueue.push({ form, findingKey });
+      remediationDebug(`Queued remediation for ${findingKey}. Queue length: ${remediationQueue.length}.`);
+      updateQueuedButtons();
+    }
+    await runQueuedRemediations();
+    return;
+  }
+  await runRemediationForm(form);
+});
+
+document.addEventListener('submit', async (event) => {
+  const form = event.target.closest('form[data-remediation-async]');
+  if (!form) return;
+  event.preventDefault();
+  remediationDebug(`Form submit intercepted for ${form.getAttribute('action') || '(unknown action)'}.`);
+  await runRemediationForm(form);
 });
 
 async function pollRemediationJob(panel) {
   const jobId = panel.getAttribute('data-remediation-job');
   if (!jobId) return;
+  remediationDebug(`Polling remediation job ${jobId}.`);
   try {
     const response = await fetch(`/job-status?id=${encodeURIComponent(jobId)}`);
-    if (!response.ok) return;
+    if (!response.ok) {
+      remediationDebug(`Job poll failed with ${response.status} ${response.statusText}.`);
+      return;
+    }
     const payload = await response.json();
-    panel.querySelectorAll('[data-job-field]').forEach((node) => {
-      const field = node.getAttribute('data-job-field');
-      const value = payload[field];
-      if (field === 'logs') {
-        node.textContent = value || '';
-      } else {
-        node.textContent = value == null ? '' : String(value);
-      }
+    remediationDebug(`Job ${jobId} status: ${payload.status}`);
+    if (payload.inline_job_key) {
+      document.querySelectorAll(`[data-finding-key="${payload.inline_job_key}"]`).forEach((button) => {
+        button.classList.remove('is-running', 'is-finished');
+        button.disabled = false;
+        button.textContent = 'Fix with Codex';
+        button.dataset.jobId = '';
+        if (payload.status === 'queued') {
+          button.classList.add('is-running');
+          button.disabled = true;
+          button.textContent = 'Queued...';
+          button.dataset.jobId = payload.job_id || '';
+        } else if (payload.status === 'running') {
+          button.classList.add('is-running');
+          button.disabled = false;
+          button.textContent = 'Running... Stop?';
+          button.dataset.jobId = payload.job_id || '';
+        } else if (payload.status === 'stopping') {
+          button.classList.add('is-running');
+          button.disabled = true;
+          button.textContent = 'Stopping...';
+          button.dataset.jobId = payload.job_id || '';
+        } else if (payload.status === 'completed') {
+          button.classList.add('is-finished');
+          button.textContent = 'Finished';
+          button.disabled = true;
+        } else if (payload.status === 'failed' || payload.status === 'stopped') {
+          button.disabled = false;
+          button.textContent = 'Fix with Codex';
+        }
+      });
+    }
+    document.querySelectorAll(`[data-remediation-job="${jobId}"]`).forEach((jobPanel) => {
+      jobPanel.querySelectorAll('[data-job-field]').forEach((node) => {
+        const field = node.getAttribute('data-job-field');
+        const value = payload[field];
+        if (field === 'logs') {
+          node.textContent = value || '';
+        } else {
+          node.textContent = value == null ? '' : String(value);
+        }
+      });
+      jobPanel.querySelectorAll('[data-job-html]').forEach((node) => {
+        const field = node.getAttribute('data-job-html');
+        node.innerHTML = payload[field] || '';
+      });
     });
-    if (payload.status === 'queued' || payload.status === 'running') {
+    if (isTerminalStatus(payload.status)) {
+      resolveJobWaiter(jobId);
+    }
+    if (payload.status === 'queued' || payload.status === 'running' || payload.status === 'stopping') {
       window.setTimeout(() => pollRemediationJob(panel), 1500);
     }
   } catch (error) {
+    remediationDebug(`Job poll exception for ${jobId}: ${error}`);
     window.setTimeout(() => pollRemediationJob(panel), 2500);
   }
 }
 
 document.querySelectorAll('[data-remediation-job]').forEach((panel) => {
+  remediationDebug(`Existing remediation job panel found on load: ${panel.getAttribute('data-remediation-job') || ''}`);
   pollRemediationJob(panel);
 });
 </script>"""
 
 
-def render_findings_panel(
-    findings_html: str,
-    findings: list[Finding],
-    remediation_target: str,
-    context: ProjectContext | None,
-) -> str:
-    batch_controls = render_batch_actions(findings, remediation_target, context)
+def render_findings_panel(findings_html: str) -> str:
     return f"""
     <section class="panel">
       <h2>Top Findings</h2>
-      {batch_controls}
       {findings_html}
     </section>
 """
@@ -510,6 +844,11 @@ def render_html_finding(
     finding: Finding,
     remediation_target: str = "",
     context: ProjectContext | None = None,
+    inline_job_key: str = "",
+    inline_job_html: str = "",
+    active_job_id: str = "",
+    active_job_key: str = "",
+    active_job_status: str = "",
 ) -> str:
     evidence_items = "".join(
         f"<li><code>{html.escape(evidence.path)}{':' + str(evidence.line) if evidence.line else ''}</code> - {html.escape(evidence.snippet)}</li>"
@@ -517,14 +856,13 @@ def render_html_finding(
     )
     refs = ", ".join(finding.framework_refs)
     copy_text = html.escape(finding_copy_text(finding), quote=True)
-    actions = render_finding_actions(finding, remediation_target, context)
-    check = render_finding_checkbox(finding, remediation_target)
+    actions = render_finding_actions(finding, remediation_target, context, active_job_id, active_job_key, active_job_status)
+    inline_console = inline_job_html if inline_job_key and inline_job_key == finding_key(finding) else ""
     return f"""
 <article class="card finding severity-{html.escape(finding.severity)}">
   <div class="finding-topline">
     <h3>[{html.escape(finding.severity.upper())}] {html.escape(finding.title)}</h3>
     <div class="action-cluster">
-      {check}
       <button class="copy-button" type="button" data-copy-text="{copy_text}">Copy</button>
       {actions}
     </div>
@@ -535,6 +873,7 @@ def render_html_finding(
   <p><strong>Recommendation:</strong> {html.escape(finding.recommendation)}</p>
   <p><strong>Framework mapping:</strong> {html.escape(refs or 'None')}</p>
   <ul>{evidence_items}</ul>
+  {inline_console}
 </article>
 """
 
@@ -543,89 +882,42 @@ def render_finding_actions(
     finding: Finding,
     remediation_target: str,
     context: ProjectContext | None,
+    active_job_id: str = "",
+    active_job_key: str = "",
+    active_job_status: str = "",
 ) -> str:
     if not remediation_target:
         return "<span class='finding-note'>Codex actions are available for local path analysis.</span>"
 
     context = context or ProjectContext()
     hidden = remediation_hidden_inputs(finding, remediation_target, context)
-    plan_form = (
-        "<form class='action-form' method='post' action='/remediation-review'>"
-        f"{hidden}"
-        "<input type='hidden' name='mode' value='plan'>"
-        "<button class='action-button' type='submit'>Plan with Codex</button>"
-        "</form>"
-    )
+    key = finding_key(finding)
+    is_active = active_job_key == key
+    fix_label = "Fix with Codex"
+    fix_class = "action-button remediation-fix-button"
+    fix_disabled = ""
+    fix_job_id = ""
+    if is_active and active_job_status in {"queued", "running"}:
+        fix_label = "Queued..." if active_job_status == "queued" else "Running... Stop?"
+        fix_class += " is-running"
+        fix_disabled = " disabled" if active_job_status == "queued" else ""
+        fix_job_id = active_job_id
+    elif is_active and active_job_status == "stopping":
+        fix_label = "Stopping..."
+        fix_class += " is-running"
+        fix_disabled = " disabled"
+        fix_job_id = active_job_id
+    elif is_active and active_job_status == "completed":
+        fix_label = "Finished"
+        fix_class += " is-finished"
     apply_form = (
-        "<form class='action-form' method='post' action='/remediation-review'>"
+        "<form class='action-form' method='post' action='/remediation-start' data-remediation-async='true'>"
         f"{hidden}"
         "<input type='hidden' name='mode' value='apply'>"
-        "<button class='action-button apply' type='submit'>Fix with Codex</button>"
+        f"<button class='{fix_class}' type='submit' data-remediation-button='true' data-finding-key='{html.escape(key, quote=True)}' data-job-id='{html.escape(fix_job_id, quote=True)}'{fix_disabled}>{html.escape(fix_label)}</button>"
         "</form>"
     )
-    return plan_form + apply_form
-
-
-def render_batch_actions(
-    findings: list[Finding],
-    remediation_target: str,
-    context: ProjectContext | None,
-) -> str:
-    if not findings:
-        return ""
-    if not remediation_target:
-        return "<p class='bulk-note'>Batch Codex actions are available for local path analysis.</p>"
-
-    context = context or ProjectContext()
-    shared_hidden = remediation_context_inputs(remediation_target, context)
-    controls = (
-        "<form id='batch-plan-form' class='bulk-actions' method='post' action='/remediation-review' data-batch-remediation='true'>"
-        "<div class='bulk-left'>"
-        "<button class='action-button' type='button' data-select-findings='all'>Select all</button>"
-        "<button class='action-button' type='button' data-select-findings='none'>Clear</button>"
-        "<span class='bulk-note'>Choose one or more findings, then send the group to Codex.</span>"
-        "</div>"
-        "<div class='bulk-left'>"
-        f"{shared_hidden}"
-        "<input type='hidden' name='mode' value='plan'>"
-        "<button class='action-button' type='submit'>Plan selected with Codex</button>"
-        "</div>"
-        "</form>"
-        "<form id='batch-apply-form' class='bulk-actions' method='post' action='/remediation-review' data-batch-remediation='true'>"
-        "<div class='bulk-left'></div>"
-        "<div class='bulk-left'>"
-        f"{shared_hidden}"
-        "<input type='hidden' name='mode' value='apply'>"
-        "<button class='action-button apply' type='submit'>Fix selected with Codex</button>"
-        "</div>"
-        "</form>"
-    )
-    return controls
-
-
-def remediation_context_inputs(remediation_target: str, context: ProjectContext) -> str:
-    values = {
-        "target_path": remediation_target,
-        "project_description": context.description,
-        "project_stack": context.stack,
-        "project_goals": context.goals,
-    }
-    return "".join(
-        f"<input type='hidden' name='{html.escape(name)}' value='{html.escape(value, quote=True)}'>"
-        for name, value in values.items()
-    )
-
-
-def render_finding_checkbox(finding: Finding, remediation_target: str) -> str:
-    if not remediation_target:
-        return ""
-    key = html.escape(finding_key(finding), quote=True)
-    return (
-        "<label class='finding-check'>"
-        f"<input class='batch-finding-select' type='checkbox' value='{key}'>"
-        "Select"
-        "</label>"
-    )
+    return apply_form
 
 
 def remediation_hidden_inputs(finding: Finding, remediation_target: str, context: ProjectContext) -> str:
