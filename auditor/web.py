@@ -620,7 +620,7 @@ class AuditorHandler(BaseHTTPRequestHandler):
     <section class="hero intro">
       <div>
         <div class="eyebrow">Hackathon MVP</div>
-        <h1 class="headline">Turn CI/CD drift into a migration plan with evidence.</h1>
+        <h1 class="headline">CI/CD Architecture Auditor MVP</h1>
         <p class="lead">Analyze one or more repositories and send findings to Codex with shared multi-repo context.</p>
         <p class="build-callout">Analyzer version: <strong>{html.escape(APP_VERSION)}</strong></p>
       </div>

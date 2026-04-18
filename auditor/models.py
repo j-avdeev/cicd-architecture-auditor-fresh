@@ -61,6 +61,7 @@ class AnalysisResult:
     overall_score: int
     strengths: list[str]
     debug_notes: list[str]
+    recent_runs: "RecentRuns | None" = None
 
 
 @dataclass
@@ -82,6 +83,73 @@ class ProjectContext:
             "description": self.description,
             "stack": self.stack,
             "goals": self.goals,
+        }
+
+
+@dataclass
+class GitLabConnection:
+    base_url: str = ""
+    project: str = ""
+    token: str = ""
+    ref: str = ""
+    pipeline_limit: int = 5
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.base_url.strip() and self.project.strip() and self.token.strip())
+
+    def as_public_dict(self) -> dict[str, str | int]:
+        return {
+            "base_url": self.base_url,
+            "project": self.project,
+            "ref": self.ref,
+            "pipeline_limit": self.pipeline_limit,
+        }
+
+
+@dataclass
+class GitLabJobRun:
+    name: str
+    stage: str
+    status: str
+    duration_seconds: float | None = None
+    queued_duration_seconds: float | None = None
+    web_url: str = ""
+
+
+@dataclass
+class GitLabPipelineRun:
+    pipeline_id: int
+    status: str
+    ref: str
+    sha: str
+    created_at: str
+    updated_at: str
+    web_url: str = ""
+    duration_seconds: float | None = None
+    jobs: list[GitLabJobRun] = field(default_factory=list)
+
+
+@dataclass
+class RecentRuns:
+    provider: str
+    project_label: str
+    fetched_count: int
+    pipelines: list[GitLabPipelineRun] = field(default_factory=list)
+    summary_notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SavedContext:
+    target_path: str = ""
+    project_context: ProjectContext = field(default_factory=ProjectContext)
+    gitlab_connection: GitLabConnection = field(default_factory=GitLabConnection)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "target_path": self.target_path,
+            "project_context": self.project_context.as_dict(),
+            "gitlab": self.gitlab_connection.as_public_dict(),
         }
 
 
