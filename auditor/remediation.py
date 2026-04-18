@@ -16,10 +16,11 @@ def remediation_prompt(
     target_path: Path,
     context: ProjectContext,
     mode: str,
+    additional_context: str = "",
 ) -> str:
     heading = "You are fixing CI/CD issues" if len(findings) > 1 else "You are fixing a CI/CD issue"
     lines = [
-        f"{heading} in the repository at: {target_path}",
+        f"{heading} in the primary repository at: {target_path}",
         "",
         f"Mode: {mode}",
     ]
@@ -55,6 +56,8 @@ def remediation_prompt(
         lines.append(f"Stack: {context.stack}")
     if context.goals:
         lines.append(f"Desired outcome: {context.goals}")
+    if additional_context.strip():
+        lines.extend(["", "Other repositories analyzed in this session:", additional_context.strip()])
     for finding in findings:
         if not finding.evidence:
             continue
@@ -67,10 +70,10 @@ def remediation_prompt(
             "",
             "Instructions:",
             "- Inspect the repository before changing files.",
+            "- Use the other analyzed repositories as context when they help explain shared CI/CD patterns or migration constraints.",
             "- Keep the fix tightly scoped to the selected findings unless a nearby supporting change is necessary.",
-            "- Consolidate related edits where that reduces CI/CD duplication or improves maintainability.",
             "- If mode is 'plan', do not modify files; explain the exact change you would make.",
-            "- If mode is 'apply', make the code changes directly in the repository.",
+            "- If mode is 'apply', make the code changes directly in the primary repository.",
             "- Mention the files you changed or would change.",
         ]
     )
@@ -82,7 +85,9 @@ def execute_codex_for_findings(
     findings: list[Finding],
     context: ProjectContext,
     mode: str,
+    additional_context: str = "",
     on_log: Callable[[str], None] | None = None,
+    on_process_start: Callable[[subprocess.Popen], None] | None = None,
 ) -> RemediationResult:
     if not target_path.exists():
         return RemediationResult(
@@ -105,7 +110,7 @@ def execute_codex_for_findings(
             finding_count=0,
         )
 
-    prompt = remediation_prompt(findings, target_path, context, mode)
+    prompt = remediation_prompt(findings, target_path, context, mode, additional_context=additional_context)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as last_message_file:
         last_message_path = Path(last_message_file.name)
 
@@ -130,8 +135,9 @@ def execute_codex_for_findings(
 
     if on_log is not None:
         on_log(f"[auditor] Launching Codex in {mode} mode for {len(findings)} finding(s).")
-        on_log(f"[auditor] Target repo: {target_path}")
-        on_log("[auditor] Inspecting repository and starting Codex...")
+        on_log(f"[auditor] Primary repo: {target_path}")
+        if additional_context.strip():
+            on_log("[auditor] Additional analyzed repositories are included in the prompt context.")
 
     process = subprocess.Popen(
         command,
@@ -142,6 +148,8 @@ def execute_codex_for_findings(
         errors="replace",
         bufsize=1,
     )
+    if on_process_start is not None:
+        on_process_start(process)
     output_parts: list[str] = []
     assert process.stdout is not None
     for line in process.stdout:
@@ -172,21 +180,3 @@ def execute_codex_for_findings(
         last_message=last_message,
         raw_output=raw_output[-12000:],
     )
-
-
-def run_codex_for_findings(
-    target_path: Path,
-    findings: list[Finding],
-    context: ProjectContext,
-    mode: str,
-) -> RemediationResult:
-    return execute_codex_for_findings(target_path, findings, context, mode, on_log=None)
-
-
-def run_codex_for_finding(
-    target_path: Path,
-    finding: Finding,
-    context: ProjectContext,
-    mode: str,
-) -> RemediationResult:
-    return run_codex_for_findings(target_path, [finding], context, mode)

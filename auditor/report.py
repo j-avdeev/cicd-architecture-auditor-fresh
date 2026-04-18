@@ -4,7 +4,7 @@ import html
 from collections import defaultdict
 from pathlib import Path
 
-from auditor.models import AnalysisResult, Finding, ProjectContext, RecentRuns, RemediationResult
+from auditor.models import AnalysisResult, Finding, ProjectContext, RemediationResult
 
 
 def markdown_report(result: AnalysisResult) -> str:
@@ -39,11 +39,6 @@ def markdown_report(result: AnalysisResult) -> str:
     else:
         for finding in result.findings:
             lines.extend(render_markdown_finding(finding))
-
-    if result.recent_runs is not None:
-        lines.append("## Recent Run Evidence")
-        lines.append("")
-        lines.extend(render_markdown_recent_runs(result.recent_runs))
 
     lines.append("## Migration Plan")
     lines.append("")
@@ -104,7 +99,8 @@ def report_fragment(
     context: ProjectContext | None = None,
     build_label: str = "",
     display_target: str | None = None,
-    remediation_target: str = "",
+    remediation_inputs: str = "",
+    remediation_enabled: bool = False,
     remediation_result: RemediationResult | None = None,
 ) -> str:
     cards = "".join(
@@ -114,12 +110,12 @@ def report_fragment(
     findings_body = "".join(
         render_html_finding(
             finding,
-            remediation_target=remediation_target,
-            context=context,
+            remediation_inputs=remediation_inputs,
+            remediation_enabled=remediation_enabled,
         )
         for finding in result.findings
     ) or "<p>No findings.</p>"
-    findings = render_findings_panel(findings_body, result.findings, remediation_target, context)
+    findings = render_findings_panel(findings_body)
     phases = []
     for phase, items in group_by_phase(result.findings).items():
         phase_items = "".join(render_migration_item(phase, item.recommendation) for item in items) or "<li>No actions scheduled.</li>"
@@ -129,7 +125,6 @@ def report_fragment(
     debug = "".join(f"<li>{html.escape(item)}</li>" for item in result.debug_notes)
     context_section = render_context_panel(context)
     build_badge = f"<span class='build-badge'>{html.escape(build_label)}</span>" if build_label else ""
-    recent_runs_section = render_recent_runs_panel(result.recent_runs)
     remediation_section = render_remediation_panel(remediation_result)
     target_label = display_target or str(result.target)
     return f"""
@@ -157,7 +152,6 @@ def report_fragment(
       <ul>{debug}</ul>
     </section>
     {findings}
-    {recent_runs_section}
     <section class="panel">
       <h2>Migration Plan</h2>
       {''.join(phases)}
@@ -241,6 +235,16 @@ def base_styles() -> str:
       align-items: start;
       gap: 12px;
     }
+    .action-cluster {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .action-form {
+      margin: 0;
+    }
     .copy-button {
       border: 1px solid var(--border);
       background: #fff;
@@ -254,62 +258,44 @@ def base_styles() -> str:
     .copy-button:hover {
       background: #f8f4ec;
     }
-    .action-cluster {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      align-items: center;
-    }
-    .action-form {
-      margin: 0;
-    }
-    .bulk-actions {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 16px;
-    }
-    .bulk-left {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .bulk-note {
-      color: var(--muted);
-      font-size: .95rem;
-    }
     .action-button {
       border: 1px solid var(--border);
-      background: #f3fbf9;
+      background: #fff;
       color: var(--ink);
       border-radius: 999px;
       padding: 8px 12px;
       font: inherit;
       cursor: pointer;
       white-space: nowrap;
+      transition: background .16s ease, color .16s ease, border-color .16s ease;
     }
     .action-button.apply {
-      background: #0f766e;
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--border);
+    }
+    .action-button.apply:hover {
+      background: #f8f4ec;
+    }
+    .action-button.running {
+      width: 42px;
+      min-width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 12px;
+      background: #1f2933;
+      border-color: #1f2933;
       color: #fff;
-      border-color: #0f766e;
+      font-size: 1rem;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
     .finding-note {
       margin-top: 10px;
       color: var(--muted);
       font-size: .92rem;
-    }
-    .finding-check {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-right: auto;
-      color: var(--muted);
-      font-size: .95rem;
-      white-space: nowrap;
     }
     .migration-item {
       display: flex;
@@ -326,12 +312,30 @@ def base_styles() -> str:
       border-color: #1f2933;
       background: #fbfaf7;
     }
+    .finding-console {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fbfaf7;
+    }
+    .finding-console[hidden] {
+      display: none;
+    }
     .console-meta {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       align-items: center;
       margin-bottom: 12px;
+    }
+    .console-title {
+      margin: 0 0 8px;
+      font-size: 1rem;
+    }
+    .console-log {
+      max-height: 280px;
+      overflow-y: auto;
     }
     .status-pill {
       display: inline-flex;
@@ -391,28 +395,39 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  const selectionButton = event.target.closest('[data-select-findings]');
-  if (selectionButton) {
-    const mode = selectionButton.getAttribute('data-select-findings');
-    document.querySelectorAll('.batch-finding-select').forEach((checkbox) => {
-      checkbox.checked = mode === 'all';
-    });
-  }
 });
 
-document.addEventListener('submit', (event) => {
-  const form = event.target.closest('form[data-batch-remediation]');
+document.addEventListener('submit', async (event) => {
+  const form = event.target.closest('form[data-remediation-launch]');
   if (!form) return;
+  event.preventDefault();
 
-  form.querySelectorAll('input[name="selected_finding"]').forEach((node) => node.remove());
-  const checked = Array.from(document.querySelectorAll('.batch-finding-select:checked'));
-  checked.forEach((checkbox) => {
-    const hidden = document.createElement('input');
-    hidden.type = 'hidden';
-    hidden.name = 'selected_finding';
-    hidden.value = checkbox.value;
-    form.appendChild(hidden);
-  });
+  const button = form.querySelector('[data-remediation-button]');
+  if (!button) return;
+
+  if (button.dataset.jobId) {
+    await stopRemediationJob(button.dataset.jobId, button, form);
+    return;
+  }
+
+  const payload = new URLSearchParams(new FormData(form));
+  button.disabled = true;
+  try {
+    const response = await fetch('/remediation-start-json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: payload.toString(),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Could not start Codex remediation.');
+    }
+    activateRemediationUI(form, button, data);
+  } catch (error) {
+    renderInlineRemediationError(form, error instanceof Error ? error.message : 'Could not start Codex remediation.');
+  } finally {
+    button.disabled = false;
+  }
 });
 
 async function pollRemediationJob(panel) {
@@ -431,6 +446,8 @@ async function pollRemediationJob(panel) {
         node.textContent = value == null ? '' : String(value);
       }
     });
+    syncGlobalRemediationPanel(payload);
+    syncRemediationButton(panel, payload);
     if (payload.status === 'queued' || payload.status === 'running') {
       window.setTimeout(() => pollRemediationJob(panel), 1500);
     }
@@ -439,23 +456,114 @@ async function pollRemediationJob(panel) {
   }
 }
 
+function activateRemediationUI(form, button, payload) {
+  const finding = form.closest('[data-finding-key]');
+  const consolePanel = finding ? finding.querySelector('[data-inline-remediation]') : null;
+  if (!consolePanel) return;
+  consolePanel.hidden = false;
+  consolePanel.setAttribute('data-remediation-job', payload.job_id);
+  consolePanel.querySelectorAll('[data-job-field]').forEach((node) => {
+    const field = node.getAttribute('data-job-field');
+    const value = payload[field];
+    if (field === 'logs') {
+      node.textContent = value || '';
+    } else {
+      node.textContent = value == null ? '' : String(value);
+    }
+  });
+  syncRemediationButton(consolePanel, payload);
+  syncGlobalRemediationPanel(payload);
+  pollRemediationJob(consolePanel);
+}
+
+function syncRemediationButton(panel, payload) {
+  const finding = panel.closest('[data-finding-key]');
+  const button = finding ? finding.querySelector('[data-remediation-button]') : null;
+  if (!button) return;
+  const active = payload.status === 'queued' || payload.status === 'running';
+  if (active) {
+    button.textContent = '■';
+    button.classList.add('running');
+    button.dataset.jobId = payload.job_id || panel.getAttribute('data-remediation-job') || '';
+    button.title = 'Stop Codex';
+  } else {
+    button.textContent = 'Fix with Codex';
+    button.classList.remove('running');
+    button.dataset.jobId = '';
+    button.title = 'Fix with Codex';
+  }
+}
+
+function syncGlobalRemediationPanel(payload) {
+  const panel = document.querySelector('[data-global-remediation]');
+  if (!panel) return;
+  panel.hidden = false;
+  panel.querySelectorAll('[data-global-job-field]').forEach((node) => {
+    const field = node.getAttribute('data-global-job-field');
+    const value = payload[field];
+    if (field === 'logs') {
+      node.textContent = value || '';
+    } else {
+      node.textContent = value == null ? '' : String(value);
+    }
+  });
+}
+
+async function stopRemediationJob(jobId, button, form) {
+  button.disabled = true;
+  try {
+    const response = await fetch('/remediation-stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams({ job_id: jobId }).toString(),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Could not stop Codex remediation.');
+    }
+    const finding = form.closest('[data-finding-key]');
+    const consolePanel = finding ? finding.querySelector('[data-inline-remediation]') : null;
+    if (consolePanel) {
+      consolePanel.setAttribute('data-remediation-job', jobId);
+      syncRemediationButton(consolePanel, data);
+      syncGlobalRemediationPanel(data);
+      pollRemediationJob(consolePanel);
+    }
+  } catch (error) {
+    renderInlineRemediationError(form, error instanceof Error ? error.message : 'Could not stop Codex remediation.');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderInlineRemediationError(form, message) {
+  const finding = form.closest('[data-finding-key]');
+  const consolePanel = finding ? finding.querySelector('[data-inline-remediation]') : null;
+  if (!consolePanel) return;
+  consolePanel.hidden = false;
+  consolePanel.querySelector('[data-job-field="status"]').textContent = 'error';
+  consolePanel.querySelector('[data-job-field="message"]').textContent = message;
+  consolePanel.querySelector('[data-job-field="logs"]').textContent = `[auditor] ${message}`;
+}
+
 document.querySelectorAll('[data-remediation-job]').forEach((panel) => {
   pollRemediationJob(panel);
+});
+
+window.addEventListener('load', () => {
+  const focusPanel = document.querySelector('[data-remediation-focus]');
+  if (!focusPanel) return;
+  focusPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 </script>"""
 
 
 def render_findings_panel(
     findings_html: str,
-    findings: list[Finding],
-    remediation_target: str,
-    context: ProjectContext | None,
 ) -> str:
-    batch_controls = render_batch_actions(findings, remediation_target, context)
     return f"""
     <section class="panel">
       <h2>Top Findings</h2>
-      {batch_controls}
       {findings_html}
     </section>
 """
@@ -481,35 +589,10 @@ def render_context_panel(context: ProjectContext | None) -> str:
 """
 
 
-def render_recent_runs_panel(recent_runs: RecentRuns | None) -> str:
-    if recent_runs is None:
-        return ""
-
-    pipeline_cards = []
-    for pipeline in recent_runs.pipelines[:5]:
-        duration = f"{pipeline.duration_seconds:.1f}s" if pipeline.duration_seconds is not None else "unknown"
-        pipeline_cards.append(
-            f"<div class='card'><h3>Pipeline #{pipeline.pipeline_id}</h3>"
-            f"<p><strong>Status:</strong> {html.escape(pipeline.status)}</p>"
-            f"<p><strong>Ref:</strong> {html.escape(pipeline.ref)}</p>"
-            f"<p><strong>Duration:</strong> {html.escape(duration)}</p>"
-            f"<p><strong>Updated:</strong> {html.escape(pipeline.updated_at)}</p></div>"
-        )
-    notes = "".join(f"<li>{html.escape(note)}</li>" for note in recent_runs.summary_notes)
-    return f"""
-    <section class="panel">
-      <h2>Recent Run Evidence</h2>
-      <p class="muted">Connected provider: {html.escape(recent_runs.provider)} | project: {html.escape(recent_runs.project_label)} | fetched pipelines: {recent_runs.fetched_count}</p>
-      <ul>{notes}</ul>
-      <div class="grid">{''.join(pipeline_cards)}</div>
-    </section>
-""" 
-
-
 def render_html_finding(
     finding: Finding,
-    remediation_target: str = "",
-    context: ProjectContext | None = None,
+    remediation_inputs: str = "",
+    remediation_enabled: bool = False,
 ) -> str:
     evidence_items = "".join(
         f"<li><code>{html.escape(evidence.path)}{':' + str(evidence.line) if evidence.line else ''}</code> - {html.escape(evidence.snippet)}</li>"
@@ -517,14 +600,13 @@ def render_html_finding(
     )
     refs = ", ".join(finding.framework_refs)
     copy_text = html.escape(finding_copy_text(finding), quote=True)
-    actions = render_finding_actions(finding, remediation_target, context)
-    check = render_finding_checkbox(finding, remediation_target)
+    actions = render_finding_actions(finding, remediation_inputs, remediation_enabled)
+    inline_console = render_inline_remediation_console()
     return f"""
-<article class="card finding severity-{html.escape(finding.severity)}">
+<article class="card finding severity-{html.escape(finding.severity)}" data-finding-key="{html.escape(finding_key(finding), quote=True)}">
   <div class="finding-topline">
     <h3>[{html.escape(finding.severity.upper())}] {html.escape(finding.title)}</h3>
     <div class="action-cluster">
-      {check}
       <button class="copy-button" type="button" data-copy-text="{copy_text}">Copy</button>
       {actions}
     </div>
@@ -535,115 +617,45 @@ def render_html_finding(
   <p><strong>Recommendation:</strong> {html.escape(finding.recommendation)}</p>
   <p><strong>Framework mapping:</strong> {html.escape(refs or 'None')}</p>
   <ul>{evidence_items}</ul>
+  {inline_console}
 </article>
 """
 
 
 def render_finding_actions(
     finding: Finding,
-    remediation_target: str,
-    context: ProjectContext | None,
+    remediation_inputs: str,
+    remediation_enabled: bool,
 ) -> str:
-    if not remediation_target:
-        return "<span class='finding-note'>Codex actions are available for local path analysis.</span>"
+    if not remediation_enabled:
+        return "<span class='finding-note'>Codex actions are available when this repo was analyzed from a local path.</span>"
 
-    context = context or ProjectContext()
-    hidden = remediation_hidden_inputs(finding, remediation_target, context)
-    plan_form = (
-        "<form class='action-form' method='post' action='/remediation-review'>"
-        f"{hidden}"
-        "<input type='hidden' name='mode' value='plan'>"
-        "<button class='action-button' type='submit'>Plan with Codex</button>"
-        "</form>"
+    hidden = remediation_inputs + (
+        f"<input type='hidden' name='selected_finding' value='{html.escape(finding_key(finding), quote=True)}'>"
     )
     apply_form = (
-        "<form class='action-form' method='post' action='/remediation-review'>"
+        "<form class='action-form' method='post' action='/remediation-start-json' data-remediation-launch='true'>"
         f"{hidden}"
         "<input type='hidden' name='mode' value='apply'>"
-        "<button class='action-button apply' type='submit'>Fix with Codex</button>"
+        "<button class='action-button apply' type='submit' data-remediation-button='true' title='Fix with Codex'>Fix with Codex</button>"
         "</form>"
     )
-    return plan_form + apply_form
+    return apply_form
 
 
-def render_batch_actions(
-    findings: list[Finding],
-    remediation_target: str,
-    context: ProjectContext | None,
-) -> str:
-    if not findings:
-        return ""
-    if not remediation_target:
-        return "<p class='bulk-note'>Batch Codex actions are available for local path analysis.</p>"
-
-    context = context or ProjectContext()
-    shared_hidden = remediation_context_inputs(remediation_target, context)
-    controls = (
-        "<form id='batch-plan-form' class='bulk-actions' method='post' action='/remediation-review' data-batch-remediation='true'>"
-        "<div class='bulk-left'>"
-        "<button class='action-button' type='button' data-select-findings='all'>Select all</button>"
-        "<button class='action-button' type='button' data-select-findings='none'>Clear</button>"
-        "<span class='bulk-note'>Choose one or more findings, then send the group to Codex.</span>"
-        "</div>"
-        "<div class='bulk-left'>"
-        f"{shared_hidden}"
-        "<input type='hidden' name='mode' value='plan'>"
-        "<button class='action-button' type='submit'>Plan selected with Codex</button>"
-        "</div>"
-        "</form>"
-        "<form id='batch-apply-form' class='bulk-actions' method='post' action='/remediation-review' data-batch-remediation='true'>"
-        "<div class='bulk-left'></div>"
-        "<div class='bulk-left'>"
-        f"{shared_hidden}"
-        "<input type='hidden' name='mode' value='apply'>"
-        "<button class='action-button apply' type='submit'>Fix selected with Codex</button>"
-        "</div>"
-        "</form>"
-    )
-    return controls
-
-
-def remediation_context_inputs(remediation_target: str, context: ProjectContext) -> str:
-    values = {
-        "target_path": remediation_target,
-        "project_description": context.description,
-        "project_stack": context.stack,
-        "project_goals": context.goals,
-    }
-    return "".join(
-        f"<input type='hidden' name='{html.escape(name)}' value='{html.escape(value, quote=True)}'>"
-        for name, value in values.items()
-    )
-
-
-def render_finding_checkbox(finding: Finding, remediation_target: str) -> str:
-    if not remediation_target:
-        return ""
-    key = html.escape(finding_key(finding), quote=True)
-    return (
-        "<label class='finding-check'>"
-        f"<input class='batch-finding-select' type='checkbox' value='{key}'>"
-        "Select"
-        "</label>"
-    )
-
-
-def remediation_hidden_inputs(finding: Finding, remediation_target: str, context: ProjectContext) -> str:
-    values = {
-        "target_path": remediation_target,
-        "selected_finding": finding_key(finding),
-        "project_description": context.description,
-        "project_stack": context.stack,
-        "project_goals": context.goals,
-    }
-    return "".join(
-        f"<input type='hidden' name='{html.escape(name)}' value='{html.escape(value, quote=True)}'>"
-        for name, value in values.items()
-    )
-
-
-def finding_key(finding: Finding) -> str:
-    return f"{finding.rule_id}|{finding.title}"
+def render_inline_remediation_console() -> str:
+    return """
+  <section class="finding-console" data-inline-remediation hidden>
+    <h4 class="console-title">Codex Output</h4>
+    <div class="console-meta">
+      <span class="status-pill" data-job-field="status">idle</span>
+      <span><strong>Mode:</strong> <span data-job-field="mode">apply</span></span>
+      <span><strong>Finding:</strong> <span data-job-field="finding_title"></span></span>
+    </div>
+    <p data-job-field="message">Waiting for Codex to start.</p>
+    <pre class="console-log" data-job-field="logs"></pre>
+  </section>
+"""
 
 
 def render_remediation_panel(remediation_result: RemediationResult | None) -> str:
@@ -677,6 +689,10 @@ def render_remediation_panel(remediation_result: RemediationResult | None) -> st
 """
 
 
+def finding_key(finding: Finding) -> str:
+    return f"{finding.rule_id}|{finding.title}"
+
+
 def finding_copy_text(finding: Finding) -> str:
     lines = [
         "Please improve this repo based on the CI/CD finding below.",
@@ -698,33 +714,6 @@ def finding_copy_text(finding: Finding) -> str:
     lines.append("")
     lines.append("Please propose concrete repository changes and, if appropriate, patch the CI/CD files or helper scripts.")
     return "\n".join(lines)
-
-
-def render_markdown_recent_runs(recent_runs: RecentRuns) -> list[str]:
-    lines = [
-        f"- Provider: `{recent_runs.provider}`",
-        f"- Project: `{recent_runs.project_label}`",
-        f"- Pipelines fetched: `{recent_runs.fetched_count}`",
-    ]
-    for note in recent_runs.summary_notes:
-        lines.append(f"- {note}")
-    lines.append("")
-    for pipeline in recent_runs.pipelines[:5]:
-        duration = f"{pipeline.duration_seconds:.1f}s" if pipeline.duration_seconds is not None else "unknown"
-        lines.append(f"### Pipeline #{pipeline.pipeline_id}")
-        lines.append("")
-        lines.append(f"- Status: `{pipeline.status}`")
-        lines.append(f"- Ref: `{pipeline.ref}`")
-        lines.append(f"- Duration: `{duration}`")
-        lines.append(f"- Updated: `{pipeline.updated_at}`")
-        if pipeline.jobs:
-            lines.append("- Jobs:")
-            for job in pipeline.jobs[:5]:
-                qd = f", queued {job.queued_duration_seconds:.1f}s" if job.queued_duration_seconds is not None else ""
-                dd = f", duration {job.duration_seconds:.1f}s" if job.duration_seconds is not None else ""
-                lines.append(f"  - `{job.stage}/{job.name}` -> `{job.status}{dd}{qd}`")
-        lines.append("")
-    return lines
 
 
 def render_migration_item(phase: str, recommendation: str) -> str:
