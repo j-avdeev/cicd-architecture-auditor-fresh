@@ -83,6 +83,7 @@ def execute_codex_for_findings(
     context: ProjectContext,
     mode: str,
     on_log: Callable[[str], None] | None = None,
+    on_process_start: Callable[[int], None] | None = None,
 ) -> RemediationResult:
     if not target_path.exists():
         return RemediationResult(
@@ -142,6 +143,8 @@ def execute_codex_for_findings(
         errors="replace",
         bufsize=1,
     )
+    if on_process_start is not None:
+        on_process_start(process.pid)
     output_parts: list[str] = []
     assert process.stdout is not None
     for line in process.stdout:

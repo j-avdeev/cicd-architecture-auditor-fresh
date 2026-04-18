@@ -54,6 +54,8 @@ The web UI supports:
 - per-finding `Plan with Codex` and `Fix with Codex` actions for local path analysis
 - checkbox selection plus batch `Plan selected with Codex` / `Fix selected with Codex`
 - remediation review screen with prompt preview, approval before apply-mode, and a live job console
+- post-run review with changed files, diff preview, and `Accept and Re-audit` / `Revert and Re-audit`
+- structured post-run review cards with a remediation timeline and per-file diff sections
 
 ## Current MVP boundaries
 
@@ -91,6 +93,23 @@ You can also select multiple findings in `Top Findings` and run batch plan/apply
 
 Before a write-mode fix starts, the app now shows a review screen with the prompt preview and an approval button.
 Once started, a live `Job Console` panel polls remediation status and shows streamed progress logs from the Codex run.
+After the run, the same panel shows changed files and a diff preview so you can keep or revert the Codex changes, then re-audit immediately.
+The review panel now breaks that down into file cards, file-by-file diff sections, and a small remediation timeline.
+
+## Remediation self-test
+
+You can smoke-test the remediation UI flow against a local repo path with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\selftest-remediation.ps1 -RepoPath C:\work\dinama-fix
+```
+
+That checks:
+
+- report generation for the local repo
+- finding selection extraction
+- remediation review rendering
+- prompt preview and repo path propagation
 
 ## Suggested next step
 
